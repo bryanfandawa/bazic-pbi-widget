@@ -150,11 +150,16 @@
   const params = new URLSearchParams(location.search);
   const EMAIL = params.get("email") || "";
   const NAME  = params.get("name")  || "";
+  const MODE  = params.get("mode")  || "";   // e.g. "sales" -> focused AI box
 
   const log   = document.getElementById("log");
   const input = document.getElementById("input");
   const send  = document.getElementById("send");
   const who   = document.getElementById("who");
+
+  if (MODE) {
+    input.placeholder = "Ask about " + MODE + " data…";
+  }
 
   function addBubble(text, role) {
     const row = document.createElement("div");
@@ -196,14 +201,19 @@
       const res = await fetch(BACKEND_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: EMAIL, displayName: NAME, message: text }),
+        body: JSON.stringify({ email: EMAIL, displayName: NAME, message: text, mode: MODE }),
       });
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      if (!res.ok) {
+        const detail = await res.text();
+        console.error("Backend error", res.status, detail);   // visible in DevTools console
+        throw new Error("HTTP " + res.status);
+      }
       const data = await res.json();
       typing.remove();
       addBubble(data.text || "", "bot");
       addChips(data.buttons);
     } catch (e) {
+      console.error("Request failed:", e);   // visible in DevTools console
       typing.remove();
       addBubble("I couldn't reach the data service. Give it a moment and try again.", "bot");
     } finally {
