@@ -141,24 +141,53 @@
     </div>
   </div>
 
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
 <script>
-  // ===== CONFIG — point this at your deployed FastAPI service =====
-  const BACKEND_URL = "https://bazic-chatbot-367872850152.us-central1.run.app/chat";   // <-- change this
+  // ===== CONFIG =====
+  const BACKEND_URL = "https://bazic-chatbot-367872850152.us-central1.run.app/chat";
 
-  // ===== Identity comes from the iframe URL (?email=...&name=...) =====
-  // Power BI injects the logged-in user's email via a DAX measure (see notes).
+  // Microsoft sign-in. These IDs are public identifiers (safe to expose here).
+  const msalInstance = new msal.PublicClientApplication({
+    auth: {
+      clientId: "8c0ee60a-1f5e-4649-8b20-ac0712012bfe",
+      authority: "https://login.microsoftonline.com/8d92727f-edd8-4db8-bfda-9790656d5722",
+      redirectUri: "https://bryanfandawa.github.io/bazic-pbi-widget/",
+    },
+    cache: { cacheLocation: "sessionStorage" },
+  });
+  const SCOPES = ["openid", "profile"];
+
+  // Only "mode" still comes from the URL. Identity now comes from Microsoft sign-in,
+  // not the URL — so a hand-typed ?email= can no longer fake who you are.
   const params = new URLSearchParams(location.search);
-  const EMAIL = params.get("email") || "";
-  const NAME  = params.get("name")  || "";
-  const MODE  = params.get("mode")  || "";   // e.g. "sales" -> focused AI box
+  const MODE = params.get("mode") || "";
 
   const log   = document.getElementById("log");
   const input = document.getElementById("input");
   const send  = document.getElementById("send");
   const who   = document.getElementById("who");
 
-  if (MODE) {
-    input.placeholder = "Ask about " + MODE + " data…";
+  if (MODE) input.placeholder = "Ask about " + MODE + " data…";
+
+  let cachedToken = null;
+  async function trySilent() {
+    const account = msalInstance.getAllAccounts()[0];
+    try {
+      const result = await msalInstance.ssoSilent(
+        account ? { scopes: SCOPES, loginHint: account.username } : { scopes: SCOPES }
+      );
+      cachedToken = result.idToken;
+      who.textContent = (result.account && (result.account.name || result.account.username)) || "signed in";
+      return true;
+    } catch (e) {
+      console.warn("Silent sign-in unavailable:", e.message || e);
+      return false;
+    }
+  }
+  async function interactiveSignIn() {
+    const result = await msalInstance.loginPopup({ scopes: SCOPES });
+    cachedToken = result.idToken;
+    who.textContent = (result.account && (result.account.name || result.account.username)) || "signed in";
   }
 
   function addBubble(text, role) {
@@ -198,11 +227,21 @@
     typing.classList.add("typing");
 
     try {
-      const res = await fetch(BACKEND_URL, {
+      let res = await fetch(BACKEND_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: EMAIL, displayName: NAME, message: text, mode: MODE }),
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + cachedToken },
+        body: JSON.stringify({ message: text, mode: MODE }),
       });
+      if (res.status === 401) {
+        // token expired or rejected — refresh once and retry
+        const ok = await trySilent();
+        if (!ok) { try { await interactiveSignIn(); } catch (_) {} }
+        res = await fetch(BACKEND_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + cachedToken },
+          body: JSON.stringify({ message: text, mode: MODE }),
+        });
+      }
       if (!res.ok) {
         const detail = await res.text();
         console.error("Backend error", res.status, detail);   // visible in DevTools console
@@ -215,7 +254,7 @@
     } catch (e) {
       console.error("Request failed:", e);   // visible in DevTools console
       typing.remove();
-      addBubble("I couldn't reach the data service. Give it a moment and try again.", "bot");
+      addBubble("Something went wrong reaching the assistant. Make sure you're signed in, then try again.", "bot");
     } finally {
       busy = false; send.disabled = false; input.focus();
     }
@@ -229,16 +268,42 @@
   };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") send.onclick(); });
 
-  // ===== Startup =====
-  if (!EMAIL) {
-    who.textContent = "no user detected";
-    addBubble("I couldn't identify who you are. The dashboard needs to pass your email in the embed URL — ask whoever set up this report to check the iframe measure.", "bot");
-    input.disabled = true; send.disabled = true;
-  } else {
-    who.textContent = NAME || EMAIL;
-    // Silently request the main menu (empty message -> greeting menu).
-    sendMessage("", { silent: true });
+  // ===== Startup: sign in, then load the bot =====
+  input.disabled = true; send.disabled = true;
+  who.textContent = "signing in…";
+
+  function showSignInButton() {
+    const wrap = document.createElement("div");
+    wrap.className = "chips";
+    const btn = document.createElement("button");
+    btn.className = "chip";
+    btn.innerHTML = '<span class="num">→</span><span>Sign in with Microsoft</span>';
+    btn.onclick = async () => {
+      try {
+        await interactiveSignIn();
+        wrap.remove();
+        input.disabled = false; send.disabled = false;
+        sendMessage("", { silent: true });
+      } catch (e) {
+        console.error("Sign-in failed:", e);
+        addBubble("Sign-in didn't complete. Please try again.", "bot");
+      }
+    };
+    wrap.appendChild(btn);
+    log.appendChild(wrap);
   }
+
+  (async () => {
+    const ok = await trySilent();   // silent if already signed into Microsoft
+    if (ok) {
+      input.disabled = false; send.disabled = false;
+      sendMessage("", { silent: true });
+    } else {
+      who.textContent = "sign-in needed";
+      addBubble("Please sign in with your Microsoft account to use the assistant.", "bot");
+      showSignInButton();
+    }
+  })();
 </script>
 </body>
 </html>
