@@ -307,14 +307,26 @@
 
     who.textContent = "sign-in needed";
     if (inIframe) {
-      const b = addBubble("To use the assistant, sign in with Microsoft using the link below. It opens in a new tab — sign in there, then come back to this dashboard and it will load automatically.\n\n", "bot");
+      // Full absolute URL — a relative path can resolve oddly inside the embed.
+      const signInUrl = location.href;
+      const b = addBubble(
+        "To use the assistant, sign in with Microsoft. Click the link below to open sign-in in a new tab, sign in there, then come back to this dashboard and it will load automatically.\n\n" +
+        "If clicking does nothing, copy this address into a new browser tab yourself:\n", "bot");
       const a = document.createElement("a");
-      a.href = location.pathname + location.search;
+      a.href = signInUrl;
       a.target = "_blank";
       a.rel = "opener";
-      a.textContent = "Sign in with Microsoft (opens a new tab)";
+      a.textContent = signInUrl;                 // show the real URL so it can be copied
       a.style.color = "var(--accent)";
       a.style.fontWeight = "700";
+      a.style.wordBreak = "break-all";
+      // If the dashboard's frame blocks pop-ups, the click silently fails.
+      // Detect that and tell the user to open the link manually.
+      a.addEventListener("click", (e) => {
+        const w = window.open(signInUrl, "_blank", "noopener");
+        if (w) { e.preventDefault(); }           // we opened it ourselves; stop the default too
+        // if w is null the default anchor navigation may still work, so don't preventDefault
+      });
       b.appendChild(a);
       // when you return to the dashboard, pick up the sign-in done in the other tab
       window.addEventListener("focus", async () => {
