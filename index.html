@@ -293,6 +293,23 @@
     log.appendChild(signInWrap);
   }
 
+  // Framed case: a real <a> link opening a new tab. Plain links are NOT stopped
+  // by the popup blocker the way scripted window.open() is.
+  function showSignInLink(label, href) {
+    if (signInWrap) signInWrap.remove();
+    signInWrap = document.createElement("div");
+    signInWrap.className = "chips";
+    const a = document.createElement("a");
+    a.className = "chip";
+    a.href = href;
+    a.target = "_blank";
+    a.rel = "opener";
+    a.style.textDecoration = "none";
+    a.innerHTML = '<span class="num">\u2192</span><span>' + label + '</span>';
+    signInWrap.appendChild(a);
+    log.appendChild(signInWrap);
+  }
+
   function startBot() {
     if (signInWrap) { signInWrap.remove(); signInWrap = null; }
     input.disabled = false; send.disabled = false;
@@ -307,8 +324,8 @@
 
     who.textContent = "sign-in needed";
     if (inIframe) {
-      addBubble("To use the assistant, sign in with Microsoft. A new tab will open — sign in there, then come back to this dashboard.", "bot");
-      showSignInButton("Sign in with Microsoft (opens a tab)", openSignInTab);
+      addBubble("To use the assistant, click below to sign in with Microsoft. It opens in a new tab — sign in there, then come back to this dashboard and it will load automatically.", "bot");
+      showSignInLink("Sign in with Microsoft (opens a tab)", location.pathname + location.search);
       // when you return to the dashboard, pick up the sign-in done in the other tab
       window.addEventListener("focus", async () => {
         if (cachedToken) return;
