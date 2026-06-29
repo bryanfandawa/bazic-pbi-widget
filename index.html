@@ -176,15 +176,29 @@
   // localStorage (shared across tabs on this site), so a sign-in done in a
   // separate tab is picked up here automatically.
   async function getTokenSilent() {
+    // 1) Already have an account in MSAL's cache? Use it.
     const account = msalInstance.getAllAccounts()[0];
-    if (!account) return false;
+    if (account) {
+      try {
+        const result = await msalInstance.acquireTokenSilent({ scopes: SCOPES, account });
+        cachedToken = result.idToken;
+        who.textContent = account.name || account.username || "signed in";
+        return true;
+      } catch (e) {
+        console.warn("acquireTokenSilent failed, will try ssoSilent:", e.message || e);
+      }
+    }
+
+    // 2) No cached account — try silent SSO against the existing Microsoft session.
+    //    This is the hidden-iframe attempt that needs third-party cookies.
     try {
-      const result = await msalInstance.acquireTokenSilent({ scopes: SCOPES, account });
+      const result = await msalInstance.ssoSilent({ scopes: SCOPES });
       cachedToken = result.idToken;
-      who.textContent = account.name || account.username || "signed in";
+      const acct = result.account;
+      who.textContent = (acct && (acct.name || acct.username)) || "signed in";
       return true;
     } catch (e) {
-      console.warn("Silent token unavailable:", e.message || e);
+      console.warn("ssoSilent unavailable:", e.message || e);
       return false;
     }
   }
