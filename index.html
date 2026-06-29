@@ -161,6 +161,9 @@
   // not the URL — so a hand-typed ?email= can no longer fake who you are.
   const params = new URLSearchParams(location.search);
   const MODE = params.get("mode") || "";
+  const KEY  = params.get("key")  || "";   // present only in the Power BI embed
+  const URL_EMAIL = params.get("email") || "";
+  const usingKey = !!KEY;   // true inside Power BI -> trusted email, no sign-in
 
   const log   = document.getElementById("log");
   const input = document.getElementById("input");
@@ -176,29 +179,15 @@
   // localStorage (shared across tabs on this site), so a sign-in done in a
   // separate tab is picked up here automatically.
   async function getTokenSilent() {
-    // 1) Already have an account in MSAL's cache? Use it.
     const account = msalInstance.getAllAccounts()[0];
-    if (account) {
-      try {
-        const result = await msalInstance.acquireTokenSilent({ scopes: SCOPES, account });
-        cachedToken = result.idToken;
-        who.textContent = account.name || account.username || "signed in";
-        return true;
-      } catch (e) {
-        console.warn("acquireTokenSilent failed, will try ssoSilent:", e.message || e);
-      }
-    }
-
-    // 2) No cached account — try silent SSO against the existing Microsoft session.
-    //    This is the hidden-iframe attempt that needs third-party cookies.
+    if (!account) return false;
     try {
-      const result = await msalInstance.ssoSilent({ scopes: SCOPES });
+      const result = await msalInstance.acquireTokenSilent({ scopes: SCOPES, account });
       cachedToken = result.idToken;
-      const acct = result.account;
-      who.textContent = (acct && (acct.name || acct.username)) || "signed in";
+      who.textContent = account.name || account.username || "signed in";
       return true;
     } catch (e) {
-      console.warn("ssoSilent unavailable:", e.message || e);
+      console.warn("Silent token unavailable:", e.message || e);
       return false;
     }
   }
@@ -250,19 +239,25 @@
     typing.classList.add("typing");
 
     try {
-      let res = await fetch(BACKEND_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + cachedToken },
-        body: JSON.stringify({ message: text, mode: MODE }),
-      });
-      if (res.status === 401) {
-        // token expired or rejected — try to refresh silently once, then retry
-        await getTokenSilent();
-        res = await fetch(BACKEND_URL, {
-          method: "POST",
+      // Build the request two ways: Power BI sends key+email; website sends a token.
+      function buildReq() {
+        if (usingKey) {
+          return {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message: text, mode: MODE, email: URL_EMAIL, key: KEY }),
+          };
+        }
+        return {
           headers: { "Content-Type": "application/json", "Authorization": "Bearer " + cachedToken },
           body: JSON.stringify({ message: text, mode: MODE }),
-        });
+        };
+      }
+
+      let res = await fetch(BACKEND_URL, { method: "POST", ...buildReq() });
+      if (res.status === 401 && !usingKey) {
+        // website only: token expired — refresh silently once, then retry
+        await getTokenSilent();
+        res = await fetch(BACKEND_URL, { method: "POST", ...buildReq() });
       }
       if (!res.ok) {
         const detail = await res.text();
@@ -276,7 +271,7 @@
     } catch (e) {
       console.error("Request failed:", e);   // visible in DevTools console
       typing.remove();
-      addBubble("Something went wrong reaching the assistant. Make sure you're signed in, then try again.", "bot");
+      addBubble("Something went wrong reaching the assistant. Please try again in a moment.", "bot");
     } finally {
       busy = false; send.disabled = false; input.focus();
     }
@@ -307,6 +302,23 @@
     log.appendChild(signInWrap);
   }
 
+  // Renders a visible, clickable sign-in link (not a scripted popup).
+  function showSignInLink(href) {
+    if (signInWrap) signInWrap.remove();
+    signInWrap = document.createElement("div");
+    signInWrap.className = "chips";
+    const a = document.createElement("a");
+    a.href = href;
+    a.target = "_blank";
+    a.rel = "opener";
+    a.textContent = "👉 Click here to sign in with Microsoft";
+    a.style.color = "var(--accent)";
+    a.style.fontWeight = "600";
+    a.style.fontSize = "13px";
+    signInWrap.appendChild(a);
+    log.appendChild(signInWrap);
+  }
+
   function startBot() {
     if (signInWrap) { signInWrap.remove(); signInWrap = null; }
     input.disabled = false; send.disabled = false;
@@ -314,6 +326,14 @@
   }
 
   (async () => {
+    // POWER BI MODE: key present -> trusted email, no sign-in at all.
+    if (usingKey) {
+      who.textContent = URL_EMAIL || "signed in";
+      startBot();
+      return;
+    }
+
+    // WEBSITE MODE: require Microsoft sign-in.
     // process a redirect coming back from Microsoft (standalone-tab sign-in)
     try { await msalInstance.handleRedirectPromise(); } catch (e) { console.warn(e); }
 
@@ -321,27 +341,8 @@
 
     who.textContent = "sign-in needed";
     if (inIframe) {
-      // Full absolute URL — a relative path can resolve oddly inside the embed.
-      const signInUrl = location.href;
-      const b = addBubble(
-        "To use the assistant, sign in with Microsoft. Click the link below to open sign-in in a new tab, sign in there, then come back to this dashboard and it will load automatically.\n\n" +
-        "If clicking does nothing, copy this address into a new browser tab yourself:\n", "bot");
-      const a = document.createElement("a");
-      a.href = signInUrl;
-      a.target = "_blank";
-      a.rel = "opener";
-      a.textContent = signInUrl;                 // show the real URL so it can be copied
-      a.style.color = "var(--accent)";
-      a.style.fontWeight = "700";
-      a.style.wordBreak = "break-all";
-      // If the dashboard's frame blocks pop-ups, the click silently fails.
-      // Detect that and tell the user to open the link manually.
-      a.addEventListener("click", (e) => {
-        const w = window.open(signInUrl, "_blank", "noopener");
-        if (w) { e.preventDefault(); }           // we opened it ourselves; stop the default too
-        // if w is null the default anchor navigation may still work, so don't preventDefault
-      });
-      b.appendChild(a);
+      addBubble("To use the assistant, sign in with Microsoft. Click the link below — it opens a tab. Sign in there, then come back to this dashboard and it will load automatically.", "bot");
+      showSignInLink("https://bryanfandawa.github.io/bazic-pbi-widget/" + location.search);
       // when you return to the dashboard, pick up the sign-in done in the other tab
       window.addEventListener("focus", async () => {
         if (cachedToken) return;
