@@ -160,10 +160,11 @@
   // Only "mode" still comes from the URL. Identity now comes from Microsoft sign-in,
   // not the URL — so a hand-typed ?email= can no longer fake who you are.
   const params = new URLSearchParams(location.search);
-  const MODE = params.get("mode") || "";
-  const KEY  = params.get("key")  || "";   // present only in the Power BI embed
-  const URL_EMAIL = params.get("email") || "";
-  const usingKey = !!KEY;   // true inside Power BI -> trusted email, no sign-in
+  const MODE        = params.get("mode") || "";
+  const KEY         = params.get("key")  || "";
+  const SALESNAME   = params.get("salesname") || "";
+  const AUDIT_EMAIL = params.get("email") || "";
+  const usingKey    = !!KEY;
 
   const log   = document.getElementById("log");
   const input = document.getElementById("input");
@@ -244,12 +245,12 @@
         if (usingKey) {
           return {
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: text, mode: MODE, email: URL_EMAIL, key: KEY }),
+            body: JSON.stringify({ message: text, salesname: SALESNAME, email: AUDIT_EMAIL, key: KEY }),
           };
         }
         return {
           headers: { "Content-Type": "application/json", "Authorization": "Bearer " + cachedToken },
-          body: JSON.stringify({ message: text, mode: MODE }),
+          body: JSON.stringify({ message: text }),
         };
       }
 
@@ -328,7 +329,7 @@
   (async () => {
     // POWER BI MODE: key present -> trusted email, no sign-in at all.
     if (usingKey) {
-      who.textContent = URL_EMAIL || "signed in";
+      who.textContent = AUDIT_EMAIL || "signed in";
       startBot();
       return;
     }
