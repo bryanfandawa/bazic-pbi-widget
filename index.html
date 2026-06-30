@@ -329,7 +329,7 @@
   (async () => {
     // POWER BI MODE: key present -> trusted email, no sign-in at all.
     if (usingKey) {
-      who.textContent = AUDIT_EMAIL || "signed in";
+      who.textContent = SALESNAME || "signed in";
       startBot();
       return;
     }
