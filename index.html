@@ -50,6 +50,18 @@
   .status { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #9FB0C0; margin-top: 1px; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
 
+  /* ---- New chat / clear ---- */
+  .newchat {
+    margin-left: auto;
+    padding: 6px 10px; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,.35);
+    background: transparent; color: #fff;
+    font-size: 11.5px; font-weight: 600; cursor: pointer;
+    transition: background .15s, border-color .15s;
+  }
+  .newchat:hover:not(:disabled) { background: rgba(255,255,255,.12); border-color: var(--accent); }
+  .newchat:disabled { opacity: .4; cursor: default; }
+
   /* ---- Message log ---- */
   .log {
     flex: 1; overflow-y: auto;
@@ -132,6 +144,7 @@
         <h1>Analytics Bot</h1>
         <div class="status"><span class="dot"></span><span id="who">connecting…</span></div>
       </div>
+      <button class="newchat" id="newchat" title="Start a new chat" disabled>⟳ New chat</button>
     </div>
 
     <div class="log" id="log"></div>
@@ -167,10 +180,11 @@
   const AUDIT_EMAIL = params.get("email") || "";
   const usingKey    = !!KEY;
 
-  const log   = document.getElementById("log");
-  const input = document.getElementById("input");
-  const send  = document.getElementById("send");
-  const who   = document.getElementById("who");
+  const log     = document.getElementById("log");
+  const input   = document.getElementById("input");
+  const send    = document.getElementById("send");
+  const who     = document.getElementById("who");
+  const newchat = document.getElementById("newchat");
 
   if (MODE) input.placeholder = "Ask about " + MODE + " data…";
 
@@ -231,10 +245,72 @@
     log.scrollTop = log.scrollHeight;
   }
 
+  // ===== Chat persistence =====
+  // The widget is embedded per Power BI page; switching pages reloads the iframe
+  // and would otherwise wipe the conversation. We keep the transcript in
+  // localStorage (keyed per user) so it survives reloads and page switches.
+  // Shape is [{role, text, buttons?}] — the same shape we'll later POST as
+  // history to enable follow-up questions.
+  let transcript = [];
+
+  function storageKey() {
+    const acct = msalInstance.getAllAccounts()[0];
+    const id = usingKey ? (SALESNAME || "pbi") : ((acct && acct.username) || "web");
+    return `bayz_chat_v1::${id}::${MODE}`;
+  }
+
+  function saveTranscript() {
+    try {
+      // Cap so localStorage can't grow without bound.
+      localStorage.setItem(storageKey(), JSON.stringify(transcript.slice(-100)));
+    } catch (e) {
+      console.warn("Could not save chat history:", e.message || e);  // quota/disabled -> stay in-memory
+    }
+  }
+
+  function loadTranscript() {
+    try {
+      const raw = localStorage.getItem(storageKey());
+      const parsed = raw ? JSON.parse(raw) : null;
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Record a persisted message (skip transient bubbles: typing, errors, sign-in).
+  function record(role, text, buttons) {
+    transcript.push(buttons && buttons.length ? { role, text, buttons } : { role, text });
+    saveTranscript();
+  }
+
+  // Wipe this user's saved conversation and start fresh with the greeting.
+  function clearChat() {
+    if (busy) return;
+    transcript = [];
+    try { localStorage.removeItem(storageKey()); } catch (e) { /* ignore */ }
+    log.innerHTML = "";
+    signInWrap = null;
+    sendMessage("", { silent: true });   // re-greet
+    input.focus();
+  }
+
+  // Replay saved history on load. Returns true if there was something to restore.
+  function restoreTranscript() {
+    const saved = loadTranscript();
+    if (!saved || !saved.length) return false;
+    transcript = saved;
+    for (const m of saved) {
+      addBubble(m.text, m.role === "user" ? "user" : "bot");
+      if (m.role === "bot" && m.buttons) addChips(m.buttons);
+    }
+    return true;
+  }
+
   let busy = false;
   async function sendMessage(text, { silent } = { silent: false }) {
     if (busy) return;
-    if (!silent) addBubble(text, "user");
+    if (!silent) { addBubble(text, "user"); record("user", text); }
 
     busy = true; send.disabled = true;
     const typing = addBubble("…", "bot");
@@ -270,6 +346,7 @@
       typing.remove();
       addBubble(data.text || "", "bot");
       addChips(data.buttons);
+      record("bot", data.text || "", data.buttons);
     } catch (e) {
       console.error("Request failed:", e);   // visible in DevTools console
       typing.remove();
@@ -324,6 +401,10 @@
   function startBot() {
     if (signInWrap) { signInWrap.remove(); signInWrap = null; }
     input.disabled = false; send.disabled = false;
+    newchat.disabled = false;
+    newchat.onclick = clearChat;
+    // If we have saved history for this user, replay it instead of re-greeting.
+    if (restoreTranscript()) { input.focus(); return; }
     sendMessage("", { silent: true });
   }
 
