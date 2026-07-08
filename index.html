@@ -40,10 +40,12 @@
     border-bottom: 3px solid var(--accent);
   }
   .mark {
-    width: 30px; height: 30px; border-radius: 8px; flex: none;
+    width: 60px; height: 60px; border-radius: 14px; flex: none;
     background: var(--accent); color: var(--ink);
     display: grid; place-items: center; overflow: hidden;
-    font-weight: 800; font-size: 15px;
+    /* frame in the same amber as the header/chat divider line */
+    border: 3px solid var(--accent);
+    font-weight: 800; font-size: 20px;
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
   }
   .mark img { width: 100%; height: 100%; object-fit: cover; display: block; }
