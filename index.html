@@ -159,6 +159,9 @@
 <script>
   // ===== CONFIG =====
   const BACKEND_URL = "https://bazic-chatbot-367872850152.us-central1.run.app/chat";
+  const API_BASE    = BACKEND_URL.replace(/\/chat$/, "");
+  const HISTORY_URL = API_BASE + "/history";
+  const CLEAR_URL   = API_BASE + "/history/clear";
 
   // Microsoft sign-in. These IDs are public identifiers (safe to expose here).
   const msalInstance = new msal.PublicClientApplication({
@@ -245,66 +248,69 @@
     log.scrollTop = log.scrollHeight;
   }
 
-  // ===== Chat persistence =====
-  // The widget is embedded per Power BI page; switching pages reloads the iframe
-  // and would otherwise wipe the conversation. We keep the transcript in
-  // localStorage (keyed per user) so it survives reloads and page switches.
-  // Shape is [{role, text, buttons?}] — the same shape we'll later POST as
-  // history to enable follow-up questions.
+  // ===== Chat persistence (server-side) =====
+  // Browsers block localStorage for third-party iframes, so an embedded Power BI
+  // widget can't persist locally. Instead the backend logs every turn and serves
+  // it back via /history, so the chat survives page switches for ~a day, for any
+  // viewer of that salesname view. `transcript` is kept in memory (same
+  // [{role,text}] shape) for the upcoming follow-up-question feature.
   let transcript = [];
 
-  function storageKey() {
-    const acct = msalInstance.getAllAccounts()[0];
-    const id = usingKey ? (SALESNAME || "pbi") : ((acct && acct.username) || "web");
-    return `bayz_chat_v1::${id}::${MODE}`;
+  // Identity for backend calls: Power BI sends key+salesname; website sends a token.
+  function authHeaders() {
+    return usingKey
+      ? { "Content-Type": "application/json" }
+      : { "Content-Type": "application/json", "Authorization": "Bearer " + cachedToken };
+  }
+  function identityFields() {
+    return usingKey ? { salesname: SALESNAME, email: AUDIT_EMAIL, key: KEY } : {};
   }
 
-  function saveTranscript() {
+  function record(role, text) {
+    transcript.push({ role, text });   // in-memory only; the backend is the store
+  }
+
+  // Load recent conversation from the backend and render it. Returns true if it
+  // rendered anything (turns or greeting), false on failure so we can fall back.
+  async function loadHistory() {
     try {
-      // Cap so localStorage can't grow without bound.
-      localStorage.setItem(storageKey(), JSON.stringify(transcript.slice(-100)));
+      const res = await fetch(HISTORY_URL, {
+        method: "POST", headers: authHeaders(), body: JSON.stringify(identityFields()),
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      const turns = Array.isArray(data.turns) ? data.turns : [];
+      if (turns.length) {
+        transcript = turns.slice();
+        for (const m of turns) addBubble(m.text, m.role === "user" ? "user" : "bot");
+        return true;
+      }
+      if (data.greeting) {                       // no history yet -> show greeting
+        addBubble(data.greeting, "bot");
+        transcript = [{ role: "bot", text: data.greeting }];
+        return true;
+      }
+      return false;
     } catch (e) {
-      console.warn("Could not save chat history:", e.message || e);  // quota/disabled -> stay in-memory
+      console.warn("Could not load chat history:", e.message || e);
+      return false;
     }
   }
 
-  function loadTranscript() {
-    try {
-      const raw = localStorage.getItem(storageKey());
-      const parsed = raw ? JSON.parse(raw) : null;
-      return Array.isArray(parsed) ? parsed : null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  // Record a persisted message (skip transient bubbles: typing, errors, sign-in).
-  function record(role, text, buttons) {
-    transcript.push(buttons && buttons.length ? { role, text, buttons } : { role, text });
-    saveTranscript();
-  }
-
-  // Wipe this user's saved conversation and start fresh with the greeting.
-  function clearChat() {
+  // New-chat button: tell the backend to hide prior turns (audit log is kept),
+  // then reset the view and greet fresh.
+  async function clearChat() {
     if (busy) return;
+    try {
+      await fetch(CLEAR_URL, {
+        method: "POST", headers: authHeaders(), body: JSON.stringify(identityFields()),
+      });
+    } catch (e) { console.warn("Clear failed:", e.message || e); }
     transcript = [];
-    try { localStorage.removeItem(storageKey()); } catch (e) { /* ignore */ }
     log.innerHTML = "";
     signInWrap = null;
     sendMessage("", { silent: true });   // re-greet
     input.focus();
-  }
-
-  // Replay saved history on load. Returns true if there was something to restore.
-  function restoreTranscript() {
-    const saved = loadTranscript();
-    if (!saved || !saved.length) return false;
-    transcript = saved;
-    for (const m of saved) {
-      addBubble(m.text, m.role === "user" ? "user" : "bot");
-      if (m.role === "bot" && m.buttons) addChips(m.buttons);
-    }
-    return true;
   }
 
   let busy = false;
@@ -317,17 +323,11 @@
     typing.classList.add("typing");
 
     try {
-      // Build the request two ways: Power BI sends key+email; website sends a token.
+      // Build the request; identity via key+salesname (Power BI) or token (website).
       function buildReq() {
-        if (usingKey) {
-          return {
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: text, salesname: SALESNAME, email: AUDIT_EMAIL, key: KEY }),
-          };
-        }
         return {
-          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + cachedToken },
-          body: JSON.stringify({ message: text }),
+          headers: authHeaders(),
+          body: JSON.stringify({ message: text, ...identityFields() }),
         };
       }
 
@@ -346,7 +346,7 @@
       typing.remove();
       addBubble(data.text || "", "bot");
       addChips(data.buttons);
-      record("bot", data.text || "", data.buttons);
+      record("bot", data.text || "");
     } catch (e) {
       console.error("Request failed:", e);   // visible in DevTools console
       typing.remove();
@@ -398,14 +398,15 @@
     log.appendChild(signInWrap);
   }
 
-  function startBot() {
+  async function startBot() {
     if (signInWrap) { signInWrap.remove(); signInWrap = null; }
     input.disabled = false; send.disabled = false;
     newchat.disabled = false;
     newchat.onclick = clearChat;
-    // If we have saved history for this user, replay it instead of re-greeting.
-    if (restoreTranscript()) { input.focus(); return; }
-    sendMessage("", { silent: true });
+    // Restore recent conversation from the backend; greet fresh if none/failed.
+    const restored = await loadHistory();
+    if (!restored) sendMessage("", { silent: true });
+    input.focus();
   }
 
   (async () => {
