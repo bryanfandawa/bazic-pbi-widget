@@ -42,10 +42,11 @@
   .mark {
     width: 30px; height: 30px; border-radius: 8px; flex: none;
     background: var(--accent); color: var(--ink);
-    display: grid; place-items: center;
+    display: grid; place-items: center; overflow: hidden;
     font-weight: 800; font-size: 15px;
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
   }
+  .mark img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .bar h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .2px; }
   .status { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #9FB0C0; margin-top: 1px; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
@@ -139,7 +140,7 @@
 <body>
   <div class="app">
     <div class="bar">
-      <div class="mark">∑</div>
+      <div class="mark"><img src="https://raw.githubusercontent.com/bryanfandawa/bazic-pbi-widget/main/sales-bot-pp.png" alt="Bay-Z" /></div>
       <div>
         <h1>Analytics Bot</h1>
         <div class="status"><span class="dot"></span><span id="who">connecting…</span></div>
@@ -280,17 +281,18 @@
       if (!res.ok) return false;
       const data = await res.json();
       const turns = Array.isArray(data.turns) ? data.turns : [];
-      if (turns.length) {
-        transcript = turns.slice();
-        for (const m of turns) addBubble(m.text, m.role === "user" ? "user" : "bot");
-        return true;
-      }
-      if (data.greeting) {                       // no history yet -> show greeting
+      transcript = [];
+      // Always show the greeting/menu at the top so it stays visible after a page
+      // switch, then render the saved conversation beneath it.
+      if (data.greeting) {
         addBubble(data.greeting, "bot");
-        transcript = [{ role: "bot", text: data.greeting }];
-        return true;
+        transcript.push({ role: "bot", text: data.greeting });
       }
-      return false;
+      for (const m of turns) {
+        addBubble(m.text, m.role === "user" ? "user" : "bot");
+        transcript.push(m);
+      }
+      return !!(data.greeting || turns.length);
     } catch (e) {
       console.warn("Could not load chat history:", e.message || e);
       return false;
